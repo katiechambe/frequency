@@ -1,0 +1,654 @@
+import h5py
+import numpy as np
+import os
+import sys
+import readtreeHDF5
+import util.hdf5lib as hdf5lib
+from cosmo_tools import *
+from scipy import linalg as la
+from correct_position import *
+
+class MergerTree:
+    def __init__(self, mwid, lmcid, rvir, snap=135):
+        """
+        Inputs: 
+        mwid: MW subhalo index
+        lmcid: LMC subhalo index
+        rvir: virial radius at z=0
+                
+        """
+        self.h = 0.704
+        self.om = 0.2726
+        snapnum_last = 135
+        nsnaps = snapnum_last+1
+        
+        self.mwid = mwid
+        self.lmcid = lmcid
+        self.rvir = rvir
+        self.snap = int(snap)
+
+        treedir = '/n/ghernquist/vrodrigu/MergerTrees/output/Subhalos/Illustris/L75n1820DM'
+        tree = readtreeHDF5.TreeDB(treedir)
+        lmcbranch = tree.get_main_branch(int(snap), lmcid, keysel=['SnapNum', 'SubhaloMass', 'SubhaloPos', 'SubhaloVel', 'SubhaloID', 'SubfindID', 'SubhaloVmax']) 
+
+        mwbranch =  tree.get_main_branch(int(snap), mwid, keysel=['SnapNum', 'SubhaloMass', 'SubhaloPos', 'SubhaloVel', 'SubhaloGrNr', 'Group_M_Crit200', 'Group_M_TopHat200', 'SubhaloID', 'SubfindID']) 
+
+        self.masses = lmcbranch.SubhaloMass
+        self.snapnums = lmcbranch.SnapNum
+        self.positions = lmcbranch.SubhaloPos
+        self.velocities = lmcbranch.SubhaloVel
+        self.subfindIDs = lmcbranch.SubfindID
+        self.vmaxes = lmcbranch.SubhaloVmax
+
+        self.mw_snapnums = mwbranch.SnapNum
+        self.mw_positions = mwbranch.SubhaloPos
+        self.mw_velocities = mwbranch.SubhaloVel
+        self.mwgrpids = mwbranch.Group_M_Crit200
+        self.mtops = mwbranch.Group_M_TopHat200
+        self.mw_subfids = mwbranch.SubfindID
+        
+    def get_max_mass(self):
+        masses = self.masses
+        snapnums = self.snapnums
+        vmaxes = self.vmaxes
+        h = self.h
+        max_mass = np.max(masses)
+        x = np.where(masses == max_mass)[0][0]
+        max_mass = max_mass/h
+        vmax = vmaxes[x]
+        max_snapnum =  snapnums[x]
+        return max_mass, max_snapnum, vmax
+
+    def get_snapnums(self):
+        return self.snapnums
+
+    def get_mtops(self):
+        return self.mtops
+
+    def mask_snaps(self):
+        h = self.h
+
+        pos = self.positions
+        masses = self.masses
+        snaps = self.snapnums
+        vel = self.velocities
+        subfids = self.subfindIDs
+
+        mwsnaps = self.mw_snapnums 
+        mwpos = self.mw_positions
+        mwvel = self.mw_velocities
+        mtop = np.array(self.mtops)
+        mwsubfids = self.mw_subfids
+
+        #mask for the snaps that exist in both MW/LMC 
+        #print len(mwsnaps), len(snaps)
+        if len(mwsnaps) <= len(snaps):
+            assert(len(mwsnaps) <= len(snaps))
+            mask = np.in1d(snaps,mwsnaps) 
+            snaps = snaps[mask]
+            masses = masses[mask]
+            pos = pos[mask]
+            vel = vel[mask]
+            subfids = subfids[mask]
+
+            mask = np.in1d(mwsnaps, snaps)
+            mwsnaps = mwsnaps[mask]
+            mwpos = mwpos[mask]
+            mwvel = mwvel[mask]
+            mtop = mtop[mask]
+            mwsubfids = mwsubfids[mask]
+        else:
+            assert(len(mwsnaps) > len(snaps))
+            mask = np.in1d(mwsnaps,snaps) #np.nonzero(np.in1d(mwsnaps,snaps))[0]
+            mwsnaps = mwsnaps[mask]
+            mwpos = mwpos[mask]
+            mwvel = mwvel[mask]
+            mtop = mtop[mask]
+            mwsubfids = mwsubfids[mask]
+
+            mask = np.in1d(snaps,mwsnaps)
+            snaps = snaps[mask]
+            masses = masses[mask]
+            pos = pos[mask]
+            vel = vel[mask]
+            subfids = subfids[mask]
+        
+        assert(len(mwsnaps) == len(snaps))
+        return mwsnaps, mwpos, mwvel, mtop, mwsubfids, snaps, masses, pos, vel, subfids
+
+
+    def get_positions(self, mag=False):
+        mwsnaps, mwpos, mwvel, mtop, mwsubfids, snaps, masses, pos, vel, subfids = self.mask_snaps()
+
+        assert(len(mwpos) == len(pos))
+        relpos = [(rlmc - rmw) for rlmc, rmw in zip(pos, mwpos)] 
+        if mag:
+            relpos = [la.norm(rlmc - rmw) for rlmc, rmw in zip(pos, mwpos)] 
+        return snaps, relpos
+
+    def get_crossing_mass(self):
+        rvir = self.rvir
+        h = self.h
+        mwsnaps, mwpos, mwvel, mtop, mwsubfids, snaps, masses, pos, vel, subfids = self.mask_snaps()
+
+        crossing_mass = 0.
+        crossing_snap = -1
+        crossing_pos = np.zeros(3)
+        crossing_vel = np.zeros(3)
+        crossing_mvir = 0.
+        crossing_rvir = 0.
+        new_pos = []
+        rel_pos = []
+        rel_vel = []
+
+        for i in range(len(snaps)-1):
+            z = snapnum2z(snaps[i])
+            znext = snapnum2z(snaps[i+1])
+            zold = snapnum2z(snaps[i-1])
+            new_pos.append(la.norm(pos[i]-mwpos[i])/(h*(1+z)))
+            rel_pos.append((pos[i]-mwpos[i])/(h*(1+z)))
+            rel_vel.append(vel[i] - mwvel[i])
+
+            if i == 0:
+                continue
+            else: 
+                #print i, snaps[i], mwsnaps[i], la.norm(pos[i]-mwpos[i])/(h*(1+z)), rvir, masses[i]/h, mtop[i]/h
+                if la.norm(pos[i]-mwpos[i]) < rvir*(h*(1+z)):
+                    if la.norm(pos[i+1]-mwpos[i+1]) > rvir*(h*(1+znext)):
+                        if la.norm(pos[i-1]-mwpos[i-1]) < (la.norm(pos[i] - mwpos[i]))*((1+zold)/(1+z)):
+                            crossing_mass = masses[i]/h
+                            crossing_snap = snaps[i]
+                            crossing_pos = (pos[i] - mwpos[i])/(h*(1+z))
+                            crossing_vel = vel[i] - mwvel[i]
+                            crossing_mvir = mtop[i]/h         
+                            crossing_rvir = r_vir(0.2726, 0.704, crossing_mvir*1e10)
+
+        if crossing_snap == -1:
+            if la.norm(pos[0]-mwpos[0]) < rvir*h and la.norm(pos[1] - mwpos[1]) > rvir*h*(1+snapnum2z(snaps[1])):
+                    crossing_mass = masses[0]/h
+                    crossing_snap = snaps[0]
+                    crossing_pos = (pos[0] - mwpos[0])/h
+                    crossing_vel = vel[0] - mwvel[0]
+                    crossing_mvir = mtop[0]/h         
+                    crossing_rvir = r_vir(0.2726, 0.704, crossing_mvir*1e10)
+                    
+        #print crossing_mass, crossing_snap, la.norm(crossing_pos), crossing_vel 
+        self.crossing_snap = crossing_snap
+        self.crossing_pos = crossing_pos
+        self.crossing_vel = crossing_vel 
+        self.crossing_mvir = crossing_mvir
+        self.crossing_rvir = crossing_rvir
+        #x = np.where(snaps == crossing_snap)[0][0] 
+        #print len(snaps[:x]), len(new_pos[:x]), len(mtop[:x]), crossing_snap, snaps[x]
+        return crossing_mass, crossing_snap, crossing_pos, crossing_vel, crossing_mvir, crossing_rvir#, snaps[:x+2], new_pos[:x+2], mtop[:x+2], masses, rel_pos, rel_vel
+
+    def get_crossing_mass_modified(self):
+        rvir = self.rvir
+        h = self.h
+        om = self.om
+
+        mwsnaps, mwpos, mwvel, mtop, mwsubfids, snaps, masses, pos, vel, subfids = self.mask_snaps()
+        assert(len(pos) == len(snaps))
+
+        crossing_mass = 0.
+        crossing_snap = -1
+        crossing_pos = np.zeros(3)
+        crossing_vel = np.zeros(3)
+        crossing_mvir = 0.
+        crossing_rvir = 0.
+        crossing_subfid = -1
+
+        rel_pos = []
+        rel_pos_vec = []
+        rel_vel = []
+        rel_vel_vec = []
+
+        zs = [snapnum2z(snap) for snap in snaps]
+        for i in range(len(snaps)):
+            rel_pos.append(la.norm(correct_position(pos[i], mwpos[i])/(h*(1+zs[i]))))
+            rel_pos_vec.append(correct_position(pos[i], mwpos[i])/(h*(1+zs[i])))
+            rel_vel_vec.append(vel[i]-mwvel[i])
+
+        for i in range(len(snaps)-1):
+            
+            if i == 0:
+                continue
+            else: 
+
+                if la.norm(pos[i]-mwpos[i]) < r_vir(om, h, mtop[i]*1e10)*(h*(1+zs[i])):
+
+                    if la.norm(pos[i+1]-mwpos[i+1]) > r_vir(om, h, mtop[i+1]*1e10)*(h*(1+zs[i+1])):
+
+                        if la.norm(pos[i-1]-mwpos[i-1]) < (la.norm(pos[i] - mwpos[i]))*((1+zs[i-1])/(1+zs[i])):
+                            crossing_mass = masses[i]/h
+                            crossing_snap = snaps[i]
+                            crossing_pos = correct_position(pos[i], mwpos[i])/(h*(1+zs[i]))
+                            crossing_vel = vel[i] - mwvel[i]
+                            crossing_mvir = mtop[i]/h         
+                            crossing_rvir = r_vir(0.2726, 0.704, crossing_mvir*1e10)
+                            crossing_subfid = subfids[i]
+
+        if (crossing_snap == -1) and (len(pos) >= 2):
+            if la.norm(pos[0]-mwpos[0]) < rvir*h and la.norm(pos[1] - mwpos[1]) > r_vir(om, h, mtop[1]*1e10)*h*(1+zs[1]):
+                    crossing_mass = masses[0]/h
+                    crossing_snap = snaps[0]
+                    crossing_pos = (pos[0] - mwpos[0])/h
+                    crossing_vel = vel[0] - mwvel[0]
+                    crossing_mvir = mtop[0]/h         
+                    crossing_rvir = r_vir(0.2726, 0.704, crossing_mvir*1e10)
+                    crossing_subfid = subfids[0]
+
+        #print crossing_mass, crossing_snap, la.norm(crossing_pos), crossing_vel 
+        self.crossing_snap = crossing_snap
+        self.crossing_pos = crossing_pos
+        self.crossing_vel = crossing_vel 
+        self.crossing_mvir = crossing_mvir
+        self.crossing_rvir = crossing_rvir
+        self.crossing_subfid = crossing_subfid
+        return crossing_mass, crossing_snap, crossing_pos, crossing_vel, crossing_mvir, crossing_rvir, crossing_subfid, rel_pos, snaps, rel_pos_vec, rel_vel_vec
+
+
+    def get_true_eccentricity(self, modified=False, infall=False):
+        h = self.h
+    
+        crossing_snap = self.get_crossing_mass()[1]
+        if modified:
+            crossing_snap = self.get_crossing_mass_modified()[1]
+
+        mwsnaps, mwpos, mwvel, mtop, mwsubfids, snaps, masses, pos, vel, subfids = self.mask_snaps()
+
+        rel_pos = []
+        zs = [snapnum2z(snap) for snap in snaps]
+
+        perisnap = -1.
+        apo = 0.
+        peri = 0.
+
+        if crossing_snap in snaps:
+            x = np.where(snaps == crossing_snap)[0][0]
+
+            for lmc, mw, z in zip(pos[:x+1], mwpos[:x+1], zs[:x+1]):
+                rel_pos.append(la.norm(correct_position(lmc,mw)/(h*(1+z))))
+
+            if infall:
+                rel_pos.reverse()
+
+            ecc = float("inf")
+            rs = rel_pos
+            for i in range(1, len(rs)-1): 
+                if (rs[i-1] < rs[i]) and (rs[i] > rs[i+1]):
+                    apo = rs[i]
+                if (rs[i-1] > rs[i]) and (rs[i] < rs[i+1]):
+                    peri = rs[i]
+                    perisnap = snaps[i]
+                if apo and peri > 0.:
+                    ecc = (apo - peri)/(apo+peri)
+                    #print 'there is both an apo and peri so this should break'
+                    break
+
+            if apo > 0. and peri == 0.:
+                # if rs[1]-rs[0] > 0.:
+                #     peri = rs[0]
+                #     perisnap = snaps[0]
+                #     ecc = (apo - peri)/(apo+peri)
+                # else: 
+                ecc = 1.0
+
+            if peri > 0. and apo == 0.:
+                # if rs[1]-rs[0] < 0.:
+                #     apo = rs[0]
+                #     ecc = (apo - peri)/(apo+peri)
+                # else:
+                ecc = 1.0
+
+            if peri == 0. and apo == 0.:
+                ecc = 1.0
+        else:
+            ecc = 1.0
+
+        perimvir = 0.
+        perimass = 0.
+        perirvir = 0.
+        if perisnap > 0.:
+            ind = np.where(snaps==perisnap)[0][0]
+            perimvir = mtop[ind]
+            perimass = masses[ind]
+            perirvir = r_vir(0.2726, 0.704, mtop[ind]/h*1e10) #peri and apo are already in the right units, perirvir should be too so it's consistent
+            print perisnap, perimvir, perimass, perirvir
+        return ecc, apo, peri, perisnap, perimass/h, perimvir/h, perirvir#, rel_pos, snaps[:x+1]
+
+    def get_fof_mass(self):
+        h = self.h
+
+        pos = self.positions
+        masses = self.masses
+        snaps = self.snapnums
+        vel = self.velocities
+        grpids = self.grpids
+        m200s = np.array(self.m200s)
+
+        mwsnaps = self.mw_snapnums 
+        mwpos = self.mw_positions 
+        mwvel = self.mw_velocities
+        mwgrpids = self.mwgrpids
+        mwm200s = np.array(self.mwm200s)
+
+
+        #mask for the snaps that exist in both MW/LMC 
+        if len(mwsnaps) <= len(snaps):
+            assert(len(mwsnaps) <= len(snaps))
+            mask = np.in1d(snaps,mwsnaps) 
+            snaps = snaps[mask]
+            masses = masses[mask]
+            pos = pos[mask]
+            grpids = grpids[mask]
+            m200s = m200s[mask]
+
+            mask = np.in1d(mwsnaps, snaps)
+            mwsnaps = mwsnaps[mask]
+            mwpos = mwpos[mask]
+            mwgrpids = mwgrpids[mask]
+            mwm200s = mwm200s[mask]
+
+        else:
+            assert(len(mwsnaps) > len(snaps))
+            mask = np.in1d(mwsnaps,snaps) #np.nonzero(np.in1d(mwsnaps,snaps))[0]
+            mwsnaps = mwsnaps[mask]
+            mwpos = mwpos[mask]
+            mwgrpids = mwgrpids[mask]
+            mwm200s = mwm200s[mask]
+
+            mask = np.in1d(snaps,mwsnaps)
+            snaps = snaps[mask]
+            masses = masses[mask]
+            pos = pos[mask]
+            grpids = grpids[mask]
+            m200s = m200s[mask]
+
+        for i,j,k in zip(range(len(snaps)), grpids, mwgrpids):
+            z = snapnum2z(snaps[i])
+            assert(len(snaps) == len(grpids))
+            #print len(snaps), len(grpids), len(mwgrpids), len(m200s), len(mwm200s)
+            if j == k:
+                #print snaps[i], mwsnaps[i], j, k, m200s[i]/h, mwm200s[i]/h
+                fof_mass = m200s[i]/h
+                fof_snap = snaps[i]
+                fof_pos = (pos[i] - mwpos[i])/(h*(1+z))
+                fof_vel = vel[i] - mwvel[i]
+        #print fof_mass
+        self.fof_snap = fof_snap
+        self.fof_pos = fof_pos
+        self.fof_vel = fof_vel
+        return fof_mass
+
+    def get_fof_snap(self):
+        return self.fof_snap
+
+    def get_fof_pos(self):
+        return self.fof_pos
+
+    def get_fof_vel(self):
+        return self.fof_vel
+
+
+
+class MergerTreeFP:
+    def __init__(self, mwid, lmcid, rvir):
+        """
+        Inputs: 
+        mwid: MW subhalo index
+        lmcid: LMC subhalo index
+        rvir: rvir at z=0
+                
+        """
+        self.h = 0.704
+        self.om = 0.2726
+        snapnum_last = 135
+        nsnaps = snapnum_last+1
+        
+        self.mwid = mwid
+        self.lmcid = lmcid
+        self.rvir = rvir
+
+        treedir = '/n/ghernquist/Illustris/Runs/L75n1820FP/trees/SubLink'
+        tree = readtreeHDF5.TreeDB(treedir)
+        lmcbranch = tree.get_main_branch(135, lmcid, keysel=['SnapNum', 'SubhaloMassType', 'SubhaloPos', 'SubhaloVel', 'SubhaloMass', 'SubfindID', 'SubhaloStellarPhotometrics']) 
+
+        mwbranch =  tree.get_main_branch(135, mwid, keysel=['SnapNum', 'SubhaloMassType', 'SubhaloPos', 'SubhaloVel', 'SubhaloGrNr', 'Group_M_Crit200', 'Group_M_TopHat200', 'SubfindID', 'SubhaloStellarPhotometrics']) 
+
+        self.snapnums = lmcbranch.SnapNum
+        self.masses = lmcbranch.SubhaloMass #DM mass only
+        self.gasmasses = lmcbranch.SubhaloMassType[:,0] #gas
+        self.stellarmasses = lmcbranch.SubhaloMassType[:,4] #stars
+        self.positions = lmcbranch.SubhaloPos
+        self.velocities = lmcbranch.SubhaloVel
+        self.subfindIDs = lmcbranch.SubfindID
+        self.mags = lmcbranch.SubhaloStellarPhotometrics
+
+        self.mw_snapnums = mwbranch.SnapNum
+        self.mw_positions = mwbranch.SubhaloPos
+        self.mw_velocities = mwbranch.SubhaloVel
+        self.mwgrpids = mwbranch.Group_M_Crit200
+        self.mtops = mwbranch.Group_M_TopHat200
+        self.mw_subfids = mwbranch.SubfindID
+        self.mw_mags = mwbranch.SubhaloStellarPhotometrics
+        #print self.mtops
+
+
+    def get_dm_masses(self):
+        masses = self.masses
+        return masses 
+
+    def get_max_dm_mass(self):
+        masses = self.masses #[:,1]
+        snapnums = self.snapnums
+        h = self.h
+        max_mass = np.max(masses)
+        x = np.where(masses == max_mass)[0][0]
+        max_mass = max_mass/h
+        max_snapnum =  snapnums[x]
+        return max_mass #, max_snapnum
+
+    def get_hostIDs(self):
+        ids = self.mw_subfids
+        mwsnaps = self.mw_snapnums
+        return ids, mwsnaps
+
+    def mask_snaps_FP(self):
+        h = self.h
+
+        pos = self.positions
+        masses = self.masses
+        snaps = self.snapnums
+        vel = self.velocities
+        subfids = self.subfindIDs
+
+        mwsnaps = self.mw_snapnums 
+        mwpos = self.mw_positions
+        mwvel = self.mw_velocities
+        mtop = np.array(self.mtops)
+        mwsubfids = self.mw_subfids
+
+        #mask for the snaps that exist in both MW/LMC 
+        #print len(mwsnaps), len(snaps), 'before masking'
+
+        if len(mwsnaps) <= len(snaps):
+            assert(len(mwsnaps) <= len(snaps))
+            mask = np.in1d(snaps,mwsnaps) 
+            snaps = snaps[mask]
+            masses = masses[mask]
+            pos = pos[mask]
+            vel = vel[mask]
+            subfids = subfids[mask]
+            
+            mask = np.in1d(mwsnaps, snaps)
+            mwsnaps = mwsnaps[mask]
+            mwpos = mwpos[mask]
+            mwvel = mwvel[mask]
+            mtop = mtop[mask]
+            mwsubfids = mwsubfids[mask]
+
+        if len(mwsnaps) > len(snaps):
+            assert(len(mwsnaps) > len(snaps))
+            mask = np.in1d(mwsnaps,snaps) #np.nonzero(np.in1d(mwsnaps,snaps))[0]
+            mwsnaps = mwsnaps[mask]
+            mwpos = mwpos[mask]
+            mwvel = mwvel[mask]
+            mtop = mtop[mask]
+            mwsubfids = mwsubfids[mask]
+
+            mask = np.in1d(snaps,mwsnaps)
+            snaps = snaps[mask]
+            masses = masses[mask]
+            pos = pos[mask]
+            vel = vel[mask]
+            subfids = subfids[mask]
+        
+        assert(list(mwsnaps) == list(snaps))
+        
+        #print len(mwsnaps), len(snaps), 'after masking'
+        return mwsnaps, mwpos, mwvel, mtop, mwsubfids, snaps, masses, pos, vel, subfids
+
+    def get_positions_FP(self, mag=False):
+        mwsnaps, mwpos, mwvel, mtop, mwsubfids, snaps, masses, pos, vel, subfids = self.mask_snaps_FP()
+        assert(len(mwpos) == len(pos))
+        relpos = [(rlmc - rmw) for rlmc, rmw in zip(pos, mwpos)] 
+        if mag:
+            relpos = [la.norm(rlmc - rmw) for rlmc, rmw in zip(pos, mwpos)] 
+        return snaps, relpos, subfids
+
+    def get_peri_FP(self):
+        h = self.h
+        snaps, relpos, subfids = self.get_positions_FP()
+        relposmag = [la.norm(pos)/h for pos in relpos] 
+        pericenter = np.min(relposmag)
+        x = np.where(pericenter==relposmag)[0][0]
+        return pericenter, snaps[x], subfids[x]
+
+    def get_crossing_mass_modified_FP(self):
+        h = self.h
+        om = self.om
+        rvir = self.rvir
+
+        mwsnaps, mwpos, mwvel, mtop, mwsubfids, snaps, masses, pos, vel, subfids = self.mask_snaps_FP()
+
+        crossing_mass = 0.
+        crossing_snap = -1
+        crossing_pos = np.zeros(3)
+        crossing_vel = np.zeros(3)
+        crossing_mvir = 0.
+        crossing_rvir = 0.
+        crossing_subfid = -1
+
+        new_pos = []
+        rel_pos = []
+        rel_vel = []
+
+        zs = [snapnum2z(snap) for snap in snaps]
+        for i in range(len(snaps)):
+            rel_pos.append(la.norm(correct_position(pos[i], mwpos[i])/(h*(1+zs[i]))))
+
+        for i in range(len(snaps)-1):            
+            if i == 0:
+                continue
+            else: 
+                #print snaps[i], la.norm(pos[i]-mwpos[i])/(h*(1+zs[i])), r_vir(om, h, mtop[i]*1e10)*(h*(1+zs[i])), masses[i]/h, mtop[i]/h
+                if la.norm(pos[i]-mwpos[i]) < r_vir(om, h, mtop[i]*1e10)*(h*(1+zs[i])):
+
+                    if la.norm(pos[i+1]-mwpos[i+1]) > r_vir(om, h, mtop[i+1]*1e10)*(h*(1+zs[i+1])):
+
+                        if la.norm(pos[i-1]-mwpos[i-1]) < (la.norm(pos[i] - mwpos[i]))*((1+zs[i-1])/(1+zs[i])):
+                            crossing_mass = masses[i]/h
+                            crossing_snap = snaps[i]
+                            crossing_pos = (pos[i] - mwpos[i])/(h*(1+zs[i]))
+                            crossing_vel = vel[i] - mwvel[i]
+                            crossing_mvir = mtop[i]/h         
+                            crossing_rvir = r_vir(0.2726, 0.704, crossing_mvir*1e10)
+                            crossing_subfid = subfids[i]
+
+        if (crossing_snap == -1) and (len(pos) >= 2):
+            if la.norm(pos[0]-mwpos[0]) < rvir*h and la.norm(pos[1] - mwpos[1]) > r_vir(om, h, mtop[1]*1e10)*h*(1+zs[1]):
+                    crossing_mass = masses[0]/h
+                    crossing_snap = snaps[0]
+                    crossing_pos = (pos[0] - mwpos[0])/h
+                    crossing_vel = vel[0] - mwvel[0]
+                    crossing_mvir = mtop[0]/h         
+                    crossing_rvir = r_vir(0.2726, 0.704, crossing_mvir*1e10)
+                    crossing_subfid = subfids[0]
+                    
+        #print crossing_mass, crossing_snap, la.norm(crossing_pos), crossing_vel 
+        self.crossing_snap = crossing_snap
+        self.crossing_pos = crossing_pos
+        self.crossing_vel = crossing_vel 
+        self.crossing_mvir = crossing_mvir
+        self.crossing_rvir = crossing_rvir
+        self.crossing_subfid = crossing_subfid
+        return crossing_mass, crossing_snap, crossing_pos, crossing_vel, crossing_mvir, crossing_rvir, crossing_subfid, rel_pos, snaps
+
+    def get_inf_masses(self):
+        h = self.h
+        crossingsnap = self.get_crossing_mass_modified_FP()[1]
+        snaps = self.snapnums
+        gasmasses = self.gasmasses
+        stellarmasses = self.stellarmasses
+        assert(len(snaps) == len(gasmasses))
+        assert(len(snaps) == len(stellarmasses))
+        x = np.where(snaps == crossingsnap)[0][0]
+        return gasmasses[x]/h, stellarmasses[x]/h
+        
+    def get_peri_masses_FP(self):
+        h = self.h
+        peri, perisnap, perisubf = self.get_peri_FP()
+        snaps = self.snapnums
+        gasmasses = self.gasmasses
+        stellarmasses = self.stellarmasses
+        assert(len(snaps) == len(gasmasses))
+        assert(len(snaps) == len(stellarmasses))
+        x = np.where(snaps == perisnap)[0][0]
+        return gasmasses[x]/h, stellarmasses[x]/h
+
+    def get_peri_rvir(self):
+        h = self.h
+        mwsnaps, mwpos, mwvel, mtop, mwsubfids, snaps, masses, pos, vel, subfids = self.mask_snaps_FP()
+        assert(len(mwpos) == len(pos))
+        peri, perisnap, perisubf = self.get_peri_FP()
+        x = np.where(snaps == perisnap)[0][0]
+        perirvir = r_vir(0.2726, 0.704, mtop[x]*1e10)
+        print perirvir
+        return perirvir
+        
+    def get_peri_color(self):
+        peri, perisnap, perisubf = self.get_peri_FP()
+        snaps = self.snapnums
+        mags = self.mags
+        x = np.where(snaps == perisnap)[0][0]
+        perimags = mags[x]
+        perigr = perimags[4] - perimags[5]
+        return perigr
+
+    def get_infall_color(self):
+        crossingsnap = self.get_crossing_mass_modified_FP()[1]
+        snaps = self.snapnums
+        mags = self.mags
+        x = np.where(snaps == crossingsnap)[0][0]
+        infallmags = mags[x]
+        infallgr = infallmags[4] - infallmags[5]
+        return infallgr
+        
+if __name__ == "__main__":
+    import time 
+
+    #DM example
+    obj = MergerTree(806736, 806737, 116.)
+    print obj.get_crossing_mass_modified()
+
+    obj = MergerTreeFP(321998, 322001, 200.)
+    print obj.get_crossing_mass_modified_FP()
+    print obj.get_peri_FP()
+
+    obj = MergerTreeFP(360070, 360074, 200.)
+    print obj.get_crossing_mass_modified_FP()
+    print obj.get_peri_FP()
+    print obj.get_peri_color()
+    print obj.get_infall_color()
+
