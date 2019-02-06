@@ -43,8 +43,8 @@ print('The total number of halos in this snapshot is %i.' % len(submass))
 
 # Now we want to find the number of the most massive halos that have approximately
 # the mass of the milky way halo
-lowerMWmass = 100 # lower milky way halo mass in 10^10 Msun
-upperMWmass = 200 # upper milky way halo mass in 10^10 Msun
+lowerMWmass = 70 # lower milky way halo mass in 10^10 Msun
+upperMWmass = 300 # upper milky way halo mass in 10^10 Msun
 
 MWtypeinds = inds[np.where(( submass[inds] <= upperMWmass ) & ( submass[inds] >= lowerMWmass ))]
 print('The number of Milky way type halos is %i' % len(MWtypeinds))
@@ -56,6 +56,9 @@ MWtypesubgr = subgr[MWtypeinds]
 MWtypegrcrit = grcrit[MWtypeinds]
 MWtypemtops = mtops[MWtypeinds]
 MWtypertops = rtops[MWtypeinds]
+
+MWtypesubmass
+
 
 
 
