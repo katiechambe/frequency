@@ -2,6 +2,7 @@ import numpy as np
 import util.hdf5lib as hdf5lib
 import simread.readsubfHDF5 as readsubfHDF5
 import h5py
+import pandas as pd
 
 h = 0.704
 
@@ -35,9 +36,20 @@ firstSubMasses = submass[subhaloNumber]/h
 subhalo2Number = inds[groupMask]+1
 secondSubMasses = submass[subhalo2Number]/h
 
+# get the relative positions of the first subhalo and the second subhalo
+subhalo1Pos = subpos[subhaloNumber]
+subhalo2Pos = subpos[subhalo2Number]
+
+
+# zipping data and producing dataframe
+zipped = list(zip(groupMasses, firstSubMasses, secondSubMasses, subhalo1Pos, subhalo2Pos)
+df = pd.DataFrame(data = zipped, columns=['Group Mass', 'First Subhalo Mass', 'Second Subhalo Mass','First Subhalo Position', 'Second Subhalo Position'])
+
+df.to_csv('/rsgrps/gbeslastudents/katie/tempDataBox/subhaloData.csv',index=False,header=False)
+
 # saving data
-toSave = np.column_stack((groupMasses, firstSubMasses, secondSubMasses))
-np.savetxt('/rsgrps/gbeslastudents/katie/tempDataBox/subhaloMasses.txt', toSave, delimiter = "  ")
+#toSave = np.column_stack((groupMassesCol, firstSubMassesCol, secondSubMassesCol))
+#np.savetxt('/rsgrps/gbeslastudents/katie/tempDataBox/subhaloData.txt', toSave, delimiter = "  ")
 
 ####################################
 #in case you need to time something:
