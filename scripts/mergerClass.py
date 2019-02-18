@@ -1,9 +1,9 @@
 import numpy as np
-import util.hdf5lib as hdf5lib
-import simread.readsubfHDF5 as readsubfHDF5
+import hdf5libPy3 as hdf5lib
+import readsubfHDF5Py3 as readsubfHDF5
 import h5py
-#import pandas as pd
-import readtreeHDF5
+import pandas as pd
+import readtreeHDF5 as readtreeHDF5
 
 
 treeDirectory = '/rsgrps/gbeslastudents/Illustris/Illustris-1-Dark-MergerTree'
@@ -15,6 +15,6 @@ masses = branch.SubhaloMass
 
 print(snaps[0:10])
 print(max(masses))
-print(snaps[np.where(max(masses)=masses)]
+#print(snaps[np.where(max(masses)=masses)])
 
 
