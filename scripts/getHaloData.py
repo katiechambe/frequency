@@ -45,7 +45,7 @@ subhalo2Pos = subpos[subhalo2Number]
 zipped = list(zip(groupMasses, firstSubMasses, secondSubMasses, subhalo1Pos, subhalo2Pos))
 df = pd.DataFrame(data = zipped, columns=['Group Mass', 'First Subhalo Mass', 'Second Subhalo Mass','First Subhalo Position', 'Second Subhalo Position'])
 
-df.to_csv('/rsgrps/gbeslastudents/katie/satellites/data/subhaloData.csv',index=False,header=False)
+df.to_csv('/rsgrps/gbeslastudents/katie/satellites/data/subhaloData.csv',index=False,header=True)
 
 # saving data
 #toSave = np.column_stack((groupMassesCol, firstSubMassesCol, secondSubMassesCol))
