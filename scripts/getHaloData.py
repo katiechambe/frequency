@@ -10,12 +10,13 @@ h = 0.704
 base = '/rsgrps/gbeslastudents/Illustris/GroupCatalogsDark/'
 basedir = base
 obj = readsubfHDF5.subfind_catalog(basedir, 135, grpcat=True, keysel=['GroupFirstSub','SubhaloMass',
-'SubhaloPos','SubhaloGrNr', 'Group_M_TopHat200','Group_R_TopHat200'])
+'SubhaloPos','SubhaloGrNr', 'Group_M_TopHat200','Group_R_TopHat200','SubhaloVel'])
 
 # defining each column of the data structure
 inds = obj.GroupFirstSub
 submass = obj.SubhaloMass
 subpos = obj.SubhaloPos
+subvel = obj.SubhaloVel
 subgr = obj.SubhaloGrNr
 mvirs = obj.Group_M_TopHat200
 rvirs = obj.Group_R_TopHat200
@@ -39,11 +40,27 @@ secondSubMasses = submass[subhalo2Number]/h
 # get the relative positions of the first subhalo and the second subhalo
 subhalo1Pos = subpos[subhaloNumber]
 subhalo2Pos = subpos[subhalo2Number]
+x1 = subhalo1Pos[:,0]
+y1 = subhalo1Pos[:,1]
+z1 = subhalo1Pos[:,2]
+x2 = subhalo2Pos[:,0]
+y2 = subhalo2Pos[:,1]
+z2 = subhalo2Pos[:,2]
+
+# get the velocities of the first subhalo and the second subhalo
+subhalo1Vel = subvel[subhaloNumber]
+subhalo2Vel = subvel[subhalo2Number]
+vx1 = subhalo1Vel[:,0]
+vy1 = subhalo1Vel[:,1]
+vz1 = subhalo1Vel[:,2]
+vx2 = subhalo2Vel[:,0]
+vy2 = subhalo2Vel[:,1]
+vz2 = subhalo2Vel[:,2]
 
 
 # zipping data and producing dataframe
-zipped = list(zip(groupMasses, firstSubMasses, secondSubMasses, subhalo1Pos, subhalo2Pos))
-df = pd.DataFrame(data = zipped, columns=['Group Mass', 'First Subhalo Mass', 'Second Subhalo Mass','First Subhalo Position', 'Second Subhalo Position'])
+zipped = list(zip(groupMasses, firstSubMasses, secondSubMasses, x1, y1, z1, x2, y2, z2,vx1,vy1,vz1,vx2,vy2,vz2))
+df = pd.DataFrame(data = zipped, columns=['Group Mass', 'First Subhalo Mass', 'Second Subhalo Mass','First Subhalo x', 'First Subhalo y', 'First Subhalo z', 'Second Subhalo x','Second Subhalo y','Second Subhalo z', 'First Subhalo Vel v_x', 'First Subhalo v_y', 'First Subhalo v_z', 'Second Subhalo v_x', 'Second Subhalo v_y', 'Second Subhalo v_z'])
 
 df.to_csv('/rsgrps/gbeslastudents/katie/satellites/data/subhaloData.csv',index=False,header=True)
 
